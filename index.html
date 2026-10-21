@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Accounting Management System</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">₱</span>
+      <div>
+        <h1>Accounting Management System</h1>
+        <p>Chart of Accounts · Business Transactions · Trial Balance · Adjustments</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="btn light" id="btnSample" type="button" title="Fill the system with example data so you can see how it works">Load sample data</button>
+      <button class="btn light danger-text" id="btnReset" type="button" title="Delete everything and start fresh">Reset all</button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- First-time guide -->
+    <section class="guide card" id="guide">
+      <button class="close" id="guideClose" type="button" aria-label="Hide guide">✕</button>
+      <h2>👋 New here? Start in 4 easy steps</h2>
+      <ol class="steps">
+        <li><strong>Pick your accounting period</strong> below: calendar year (Jan–Dec) or your own fiscal year.</li>
+        <li><strong>Chart of Accounts:</strong> check the list of accounts your business uses. Add or remove as needed.</li>
+        <li><strong>Transactions:</strong> record each business event. Total debits must equal total credits.</li>
+        <li><strong>Trial Balance</strong> calculates by itself. Use <strong>Adjustments</strong> for end-of-period corrections, with a comment explaining why.</li>
+      </ol>
+      <p class="muted">Tip: press <em>Load sample data</em> at the top to see a complete example. Everything is saved automatically in this browser.</p>
+    </section>
+
+    <!-- Period selector -->
+    <section class="card period-bar" aria-label="Accounting period">
+      <div class="period-title">
+        <strong>Accounting period</strong>
+        <small>All tabs only show entries inside this period.</small>
+      </div>
+      <label class="inline">Year type
+        <select id="pmode">
+          <option value="calendar">Calendar year (Jan 1 – Dec 31)</option>
+          <option value="fiscal">Fiscal year (my own start month)</option>
+        </select>
+      </label>
+      <label class="inline" id="pstartWrap" hidden>Fiscal year starts in
+        <select id="pstart"></select>
+      </label>
+      <label class="inline"><span id="pyearLabel">Year</span>
+        <input type="number" id="pyear" min="2000" max="2100" step="1">
+      </label>
+      <div class="period-label" id="plabel"></div>
+    </section>
+
+    <!-- Tabs -->
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="accounts">1. Chart of Accounts</button>
+      <button class="tab" role="tab" data-tab="transactions">2. Business Transactions</button>
+      <button class="tab" role="tab" data-tab="trial">3. Trial Balance</button>
+      <button class="tab" role="tab" data-tab="adjustments">4. Adjustments</button>
+    </nav>
+
+    <!-- 1. CHART OF ACCOUNTS -->
+    <section class="panel active" id="tab-accounts">
+      <div class="card">
+        <h2>Chart of Accounts</h2>
+        <p class="muted">A list of every account your business uses to sort its money. Each account has a code, a name, a type, and a normal balance (the side — debit or credit — where it usually increases).</p>
+        <form id="accountForm" class="grid-form" novalidate>
+          <div class="field">
+            <label for="accCode">Code <span class="req">*</span></label>
+            <input id="accCode" name="code" inputmode="numeric" maxlength="6" placeholder="e.g. 1010" autocomplete="off">
+            <small class="hint">3–6 digits, must be unique.</small>
+            <small class="err"></small>
+          </div>
+          <div class="field grow">
+            <label for="accName">Account name <span class="req">*</span></label>
+            <input id="accName" name="name" maxlength="50" placeholder="e.g. Petty Cash" autocomplete="off">
+            <small class="hint">2–50 characters.</small>
+            <small class="err"></small>
+          </div>
+          <div class="field">
+            <label for="accType">Type <span class="req">*</span></label>
+            <select id="accType" name="type">
+              <option>Asset</option><option>Liability</option><option>Equity</option><option>Revenue</option><option>Expense</option>
+            </select>
+            <small class="hint">What kind of account is it?</small>
+          </div>
+          <div class="field">
+            <label for="accNormal">Normal balance</label>
+            <select id="accNormal" name="normal"><option>Debit</option><option>Credit</option></select>
+            <small class="hint">Filled in for you. Change only for contra accounts.</small>
+          </div>
+          <div class="field btn-field"><button class="btn primary" type="submit">+ Add account</button></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Your accounts <span class="count" id="accCount"></span></h3>
+          <label class="inline small">Filter
+            <select id="accFilter">
+              <option value="">All types</option><option>Asset</option><option>Liability</option><option>Equity</option><option>Revenue</option><option>Expense</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Code</th><th>Account name</th><th>Type</th><th>Normal balance</th><th class="num">Used in</th><th></th></tr></thead>
+            <tbody id="accBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. TRANSACTIONS -->
+    <section class="panel" id="tab-transactions">
+      <div class="card">
+        <h2>Business Transactions</h2>
+        <p class="muted">Record each business event as a journal entry. Pick the accounts affected, then enter the amount under <strong>Debit</strong> or <strong>Credit</strong> (one per line). The entry can only be saved when total debits equal total credits.</p>
+        <div id="txFormHost"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Recorded transactions <span class="count" id="txCount"></span></h3></div>
+        <div id="txList"></div>
+      </div>
+    </section>
+
+    <!-- 3. TRIAL BALANCE -->
+    <section class="panel" id="tab-trial">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>Trial Balance</h2>
+            <p class="muted">Calculated automatically from your transactions and adjustments. If it is balanced, total debits equal total credits.</p>
+          </div>
+          <div class="card-tools">
+            <label class="check"><input type="checkbox" id="tbAll"> Show accounts with no activity</label>
+            <button class="btn ghost" type="button" id="btnPrint">🖨 Print</button>
+          </div>
+        </div>
+        <div class="tb-status" id="tbStatus"></div>
+        <div class="table-wrap">
+          <table class="tb">
+            <thead>
+              <tr>
+                <th rowspan="2">Code</th><th rowspan="2">Account</th>
+                <th colspan="2" class="center">Unadjusted</th>
+                <th colspan="2" class="center">Adjustments</th>
+                <th colspan="2" class="center">Adjusted</th>
+              </tr>
+              <tr><th class="num">Debit</th><th class="num">Credit</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Debit</th><th class="num">Credit</th></tr>
+            </thead>
+            <tbody id="tbBody"></tbody>
+            <tfoot id="tbFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Adjustment comments</h3>
+        <div id="tbComments"></div>
+      </div>
+    </section>
+
+    <!-- 4. ADJUSTMENTS -->
+    <section class="panel" id="tab-adjustments">
+      <div class="card">
+        <h2>Adjustments</h2>
+        <p class="muted">Adjusting entries fix account balances at the end of the period (for example, supplies used, depreciation, or unpaid salaries). Each one needs a <strong>comment</strong> explaining why it was made, so anyone reviewing the books understands it.</p>
+        <div id="adjFormHost"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Recorded adjustments <span class="count" id="adjCount"></span></h3></div>
+        <div id="adjList"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">Data is stored only in this browser (localStorage). Clearing browser data will remove it.</footer>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
