@@ -231,6 +231,7 @@
       $$('.tab').forEach(b => b.classList.toggle('active', b === btn));
       $$('.panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab));
       if (btn.dataset.tab === 'trial') renderTrial();
+      if (btn.dataset.tab === 'dashboard') renderDashboard();
     }));
   }
 
@@ -636,12 +637,25 @@
     T(1, 'Owner invested cash to start the business', [['1000', 50000, 0], ['3000', 0, 50000]]);
     T(3, 'Bought equipment for cash', [['1500', 12000, 0], ['1000', 0, 12000]]);
     T(5, 'Bought supplies on account', [['1200', 800, 0], ['2000', 0, 800]]);
-    T(10, 'Earned service revenue (cash)', [['1000', 9500, 0], ['4000', 0, 9500]]);
+    T(12, 'Earned service revenue (cash)', [['1000', 9500, 0], ['4000', 0, 9500]]);
     T(14, 'Paid monthly rent', [['5100', 2000, 0], ['1000', 0, 2000]]);
-    T(20, 'Billed a customer on account', [['1100', 3200, 0], ['4000', 0, 3200]]);
-    T(25, 'Paid utilities', [['5200', 650, 0], ['1000', 0, 650]]);
-    T(28, 'Supplies used', [['5300', 500, 0], ['1200', 0, 500]], 'adjustment', 'Physical count shows 500 of supplies were used up during the period.');
-    T(28, 'Record depreciation on equipment', [['5500', 200, 0], ['1590', 0, 200]], 'adjustment', 'Equipment depreciates evenly over its useful life; this is the amount for the period.');
+    T(33, 'Billed a customer on account', [['1100', 3200, 0], ['4000', 0, 3200]]);
+    T(40, 'Paid monthly rent', [['5100', 2000, 0], ['1000', 0, 2000]]);
+    T(45, 'Earned service revenue (cash)', [['1000', 7200, 0], ['4000', 0, 7200]]);
+    T(55, 'Paid utilities', [['5200', 650, 0], ['1000', 0, 650]]);
+    T(64, 'Paid staff salaries', [['5000', 4500, 0], ['1000', 0, 4500]]);
+    T(75, 'Earned service revenue (cash)', [['1000', 11800, 0], ['4000', 0, 11800]]);
+    T(80, 'Paid monthly rent', [['5100', 2000, 0], ['1000', 0, 2000]]);
+    T(92, 'Customer paid the amount billed earlier', [['1000', 3200, 0], ['1100', 0, 3200]]);
+    T(105, 'Earned service revenue (cash)', [['1000', 8900, 0], ['4000', 0, 8900]]);
+    T(110, 'Paid insurance in advance', [['1300', 2400, 0], ['1000', 0, 2400]]);
+    T(120, 'Paid staff salaries', [['5000', 4500, 0], ['1000', 0, 4500]]);
+    T(135, 'Earned service revenue (cash)', [['1000', 13500, 0], ['4000', 0, 13500]]);
+    T(140, 'Paid utilities', [['5200', 720, 0], ['1000', 0, 720]]);
+    T(150, 'Paid monthly rent', [['5100', 2000, 0], ['1000', 0, 2000]]);
+    T(150, 'Supplies used', [['5300', 500, 0], ['1200', 0, 500]], 'adjustment', 'Physical count shows 500 of supplies were used up during the period.');
+    T(150, 'Record depreciation on equipment', [['5500', 200, 0], ['1590', 0, 200]], 'adjustment', 'Equipment depreciates evenly over its useful life; this is the amount for the period.');
+    T(150, 'Insurance used up', [['5400', 400, 0], ['1300', 0, 400]], 'adjustment', 'Part of the prepaid insurance has expired and is now an expense.');
     if (!(await guarded($('#btnSample'), () => store.replaceAll(next.accounts, next.entries)))) return;
     state = next;
     save(); renderAll(); toast('Sample data loaded. Open the Trial Balance tab to see the result.');
@@ -666,6 +680,427 @@
     });
   }
 
+  /* =========================================================
+     5. DASHBOARD
+     Every figure is computed from the same entries as the Trial Balance,
+     so the two always agree. Charts are plain SVG (no chart library).
+     ========================================================= */
+  const CUR = '₱';
+  const DASH = { basis: 'adjusted', view: {}, defs: [] };
+  const f = n => +Number(n).toFixed(1);
+  const fmtCur = n => (n < 0 ? '−' : '') + CUR + money(Math.abs(n));
+  const pct = (a, b) => (b ? (a / b * 100).toLocaleString('en-US', { maximumFractionDigits: 1 }) + '%' : '—');
+  const PLURAL = { Asset: 'Assets', Liability: 'Liabilities', Equity: 'Equity', Revenue: 'Revenue', Expense: 'Expenses' };
+
+  function compactNum(v) {
+    const a = Math.abs(v), s = v < 0 ? '−' : '';
+    if (a >= 1e9) return s + +(a / 1e9).toFixed(1) + 'B';
+    if (a >= 1e6) return s + +(a / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return s + +(a / 1e3).toFixed(1) + 'K';
+    return s + a;
+  }
+  const axisFmt = (v, compact) => (compact ? compactNum(v) : Math.round(v).toLocaleString('en-US'));
+
+  // Clean axis: round numbers that always include zero
+  function niceRange(min, max, n = 4) {
+    min = Math.min(0, min); max = Math.max(0, max);
+    if (max - min < 4) max = min + 4;
+    const raw = (max - min) / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag;
+    const step = (r <= 1 ? 1 : r <= 2 ? 2 : r <= 5 ? 5 : 10) * mag;
+    const lo = Math.floor(min / step) * step, hi = Math.ceil(max / step) * step, ticks = [];
+    for (let v = lo; v <= hi + step / 2; v += step) ticks.push(Math.round(v * 100) / 100);
+    return { lo, hi, ticks };
+  }
+
+  // Bars: 4px rounded data-end, square at the baseline
+  function barTop(x, y, w, h, r) {
+    if (h <= 0) return '';
+    r = Math.min(r, w / 2, h);
+    return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+  }
+  function barRight(x, y, w, h, r) {
+    r = Math.min(r, h / 2, w);
+    return `M${x},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h - r}Q${x + w},${y + h} ${x + w - r},${y + h}H${x}Z`;
+  }
+  const svgOpen = (w, h, label) => `<svg class="viz-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}">`;
+
+  /* ---------- Numbers behind the dashboard ---------- */
+  function dashData() {
+    const adjusted = DASH.basis === 'adjusted';
+    const p = period();
+    const months = [];
+    let [y, m] = p.start.split('-').map(Number);
+    for (let i = 0; i < 12; i++) {
+      months.push({ key: `${y}-${pad(m)}`, short: MONTHS[m - 1].slice(0, 3), full: `${MONTHS[m - 1]} ${y}` });
+      if (++m > 12) { m = 1; y++; }
+    }
+    const rows = new Map(state.accounts.map(a => [a.code, { a, ud: 0, uc: 0, ad: 0, ac: 0, used: false, month: new Array(12).fill(0) }]));
+    const entries = state.entries.filter(e => inPeriod(e.date));
+    let lastIdx = -1;
+    entries.forEach(e => {
+      const mi = months.findIndex(x => x.key === e.date.slice(0, 7));
+      if (mi < 0) return;
+      if (mi > lastIdx) lastIdx = mi;
+      e.lines.forEach(l => {
+        const r = rows.get(l.acct);
+        if (!r) return;
+        r.used = true;
+        if (e.kind === 'adjustment') { r.ad += l.debit; r.ac += l.credit; } else { r.ud += l.debit; r.uc += l.credit; }
+        if (adjusted || e.kind !== 'adjustment') r.month[mi] += l.debit - l.credit;
+      });
+    });
+
+    // value = balance on the account's natural side (assets & expenses: debit; the rest: credit)
+    const sgn = t => (t === 'Asset' || t === 'Expense' ? 1 : -1);
+    const list = [...rows.values()].filter(r => r.used).map(r => {
+      const dr = round2(r.ud + (adjusted ? r.ad : 0)), cr = round2(r.uc + (adjusted ? r.ac : 0)), s = sgn(r.a.type);
+      return { ...r, dr, cr, value: round2(s * (dr - cr)), before: round2(s * (r.ud - r.uc)), adjEffect: round2(s * (r.ad - r.ac)), series: r.month.map(v => round2(s * v)) };
+    }).sort((a, b) => a.a.code.localeCompare(b.a.code, undefined, { numeric: true }));
+
+    const sum = t => round2(list.filter(r => r.a.type === t).reduce((s, r) => s + r.value, 0));
+    const tot = { Asset: sum('Asset'), Liability: sum('Liability'), Equity: sum('Equity'), Revenue: sum('Revenue'), Expense: sum('Expense') };
+    const net = round2(tot.Revenue - tot.Expense);
+    const equityTotal = round2(tot.Equity + net);
+    const monthly = t => months.map((_, i) => round2(list.filter(r => r.a.type === t).reduce((s, r) => s + r.series[i], 0)));
+    const rev = monthly('Revenue'), exp = monthly('Expense');
+    const cumulative = arr => { let c = 0; return arr.map(v => (c = round2(c + v))); };
+    const cashRow = list.find(r => r.a.type === 'Asset' && /^cash\b/i.test(r.a.name));
+    const items = t => list.filter(r => r.a.type === t && r.value > 0).map(r => ({ name: r.a.name, value: r.value })).sort((a, b) => b.value - a.value);
+
+    // Trial balance status (same rule as the Trial Balance tab)
+    let ud = 0, uc = 0, jd = 0, jc = 0;
+    list.forEach(r => {
+      const u = side(round2(r.ud - r.uc)), j = side(round2(r.ud + r.ad - r.uc - r.ac));
+      ud += u.d; uc += u.c; jd += j.d; jc += j.c;
+    });
+    const tb = { ud: round2(ud), uc: round2(uc), jd: round2(jd), jc: round2(jc) };
+    tb.balanced = tb.ud === tb.uc && tb.jd === tb.jc;
+
+    return {
+      adjusted, months, lastIdx, entries, list, tot, net, equityTotal, rev, exp,
+      netM: rev.map((v, i) => round2(v - exp[i])), cumNet: cumulative(rev.map((v, i) => v - exp[i])),
+      cash: cashRow, cashCum: cashRow ? cumulative(cashRow.series) : null,
+      revItems: items('Revenue'), expItems: items('Expense'), tb,
+      eqDiff: round2(tot.Asset - (tot.Liability + equityTotal)),
+      txCount: entries.filter(e => e.kind === 'transaction').length,
+      adjCount: entries.filter(e => e.kind === 'adjustment').length,
+      latest: entries.reduce((mx, e) => (e.date > mx ? e.date : mx), '')
+    };
+  }
+
+  /* ---------- Tooltip (one tooltip, built with textContent) ---------- */
+  function tipEl() {
+    let t = $('#vizTip');
+    if (!t) { t = document.createElement('div'); t.id = 'vizTip'; t.setAttribute('role', 'tooltip'); document.body.appendChild(t); }
+    return t;
+  }
+  function showTip(data, x, y) {
+    const t = tipEl();
+    t.textContent = '';
+    const h = document.createElement('div'); h.className = 'tip-title'; h.textContent = data.title; t.appendChild(h);
+    data.rows.forEach(r => {
+      const row = document.createElement('div'); row.className = 'tip-row';
+      const key = document.createElement('span'); key.className = 'tip-key';
+      if (r.color) key.style.background = r.color;
+      const val = document.createElement('strong'); val.textContent = r.value;
+      const nm = document.createElement('span'); nm.className = 'tip-name'; nm.textContent = r.name;
+      row.append(key, val, nm); t.appendChild(row);
+    });
+    t.classList.add('show');
+    const w = t.offsetWidth, hh = t.offsetHeight;
+    let left = x + 14, top = y - hh - 12;
+    if (left + w > window.innerWidth - 8) left = x - w - 14;
+    if (left < 8) left = 8;
+    if (top < 8) top = y + 18;
+    t.style.left = left + 'px'; t.style.top = top + 'px';
+  }
+  function hideTip() { const t = $('#vizTip'); if (t) t.classList.remove('show'); }
+
+  // Each .hit rect carries data-i; marks sharing data-b="i" light up together
+  function attachHover(body, tips) {
+    $$('.hit', body).forEach(el => {
+      const i = Number(el.dataset.i);
+      const mark = on => $$(`[data-b="${i}"]`, body).forEach(m => m.classList.toggle('is-on', on));
+      const show = (x, y) => { if (tips[i]) { showTip(tips[i], x, y); mark(true); } };
+      el.addEventListener('pointerenter', e => show(e.clientX, e.clientY));
+      el.addEventListener('pointermove', e => show(e.clientX, e.clientY));
+      el.addEventListener('pointerleave', () => { hideTip(); mark(false); });
+      el.addEventListener('focus', () => { const b = el.getBoundingClientRect(); show(b.left + b.width / 2, b.top + Math.min(40, b.height / 2)); });
+      el.addEventListener('blur', () => { hideTip(); mark(false); });
+    });
+  }
+
+  /* ---------- Chart definitions ---------- */
+  function monthlyDef(d) {
+    const { rev, exp } = d;
+    return {
+      id: 'monthly', wide: true, title: 'Revenue and expenses by month', sub: 'What the business earned and what it spent in each month',
+      legend: [{ cls: 's1', name: 'Revenue' }, { cls: 's2', name: 'Expenses' }],
+      table: {
+        head: ['Month', 'Revenue', 'Expenses', 'Net income'],
+        rows: d.months.map((m, i) => [m.full, fmtCur(rev[i]), fmtCur(exp[i]), fmtCur(round2(rev[i] - exp[i]))])
+          .concat([['Total', fmtCur(d.tot.Revenue), fmtCur(d.tot.Expense), fmtCur(d.net)]])
+      },
+      build(w) {
+        const H = 300, L = 54, R = 10, T = 26, B = 30, pw = w - L - R, ph = H - T - B;
+        const sc = niceRange(0, Math.max(0, ...rev, ...exp)), compact = sc.hi >= 10000;
+        const y = v => f(T + ph - (v - sc.lo) / (sc.hi - sc.lo) * ph);
+        const band = pw / 12, bw = Math.max(4, Math.min(24, (band - 8) / 2 - 1)), gw = bw * 2 + 2;
+        let s = svgOpen(w, H, 'Revenue and expenses by month');
+        sc.ticks.forEach(t => {
+          s += `<line class="grid" x1="${L}" x2="${w - R}" y1="${y(t)}" y2="${y(t)}"/>`;
+          s += `<text class="axis" x="${L - 8}" y="${y(t) + 4}" text-anchor="end">${axisFmt(t, compact)}</text>`;
+        });
+        s += `<line class="base" x1="${L}" x2="${w - R}" y1="${y(0)}" y2="${y(0)}"/>`;
+        let peak = null;
+        d.months.forEach((m, i) => {
+          const gx = L + i * band + (band - gw) / 2;
+          [[rev[i], 'b1', gx], [exp[i], 'b2', gx + bw + 2]].forEach(([v, cls, bx]) => {
+            if (v <= 0) return;
+            s += `<path class="bar ${cls}" data-b="${i}" d="${barTop(f(bx), y(v), bw, f(y(0) - y(v)), 4)}"/>`;
+            if (!peak || v > peak.v) peak = { v, x: bx + bw / 2, yy: y(v) };
+          });
+          if (band >= 34 || i % 2 === 0) s += `<text class="axis" x="${f(L + (i + .5) * band)}" y="${H - 9}" text-anchor="middle">${m.short}</text>`;
+        });
+        if (peak) {
+          const px = Math.min(Math.max(peak.x, L + 34), w - R - 34);
+          s += `<text class="vlabel" x="${f(px)}" y="${f(peak.yy - 7)}" text-anchor="middle">${CUR}${money(peak.v)}</text>`;
+        }
+        const tips = d.months.map((m, i) => ({
+          title: m.full,
+          rows: [{ color: 'var(--viz-1)', name: 'Revenue', value: fmtCur(rev[i]) }, { color: 'var(--viz-2)', name: 'Expenses', value: fmtCur(exp[i]) },
+            { name: 'Net income', value: fmtCur(round2(rev[i] - exp[i])) }]
+        }));
+        d.months.forEach((m, i) => {
+          s += `<rect class="hit" data-i="${i}" tabindex="0" x="${f(L + i * band)}" y="${T}" width="${f(band)}" height="${ph}" aria-label="${esc(m.full)}: revenue ${fmtCur(rev[i])}, expenses ${fmtCur(exp[i])}"/>`;
+        });
+        return { svg: s + '</svg>', tips };
+      }
+    };
+  }
+
+  function lineDef(d, id, title, sub, name, series) {
+    return {
+      id, wide: false, title, sub, legend: null,
+      table: {
+        head: ['Month', name, 'Change in month'],
+        rows: d.months.map((m, i) => (i > d.lastIdx ? [m.full, '—', '—'] : [m.full, fmtCur(series[i]), fmtCur(round2(series[i] - (i ? series[i - 1] : 0)))]))
+      },
+      build(w) {
+        const H = 260, L = 54, R = 14, T = 28, B = 30, pw = w - L - R, ph = H - T - B, n = d.lastIdx + 1;
+        const vals = series.slice(0, n);
+        const sc = niceRange(Math.min(0, ...vals), Math.max(0, ...vals));
+        const compact = Math.max(Math.abs(sc.lo), Math.abs(sc.hi)) >= 10000;
+        const y = v => f(T + ph - (v - sc.lo) / (sc.hi - sc.lo) * ph);
+        const band = pw / 12, x = i => f(L + (i + .5) * band);
+        let s = svgOpen(w, H, `${title}, ${period().label}`);
+        sc.ticks.forEach(t => {
+          s += `<line class="grid" x1="${L}" x2="${w - R}" y1="${y(t)}" y2="${y(t)}"/>`;
+          s += `<text class="axis" x="${L - 8}" y="${y(t) + 4}" text-anchor="end">${axisFmt(t, compact)}</text>`;
+        });
+        s += `<line class="base" x1="${L}" x2="${w - R}" y1="${y(0)}" y2="${y(0)}"/>`;
+        d.months.forEach((m, i) => { if (band >= 34 || i % 2 === 0) s += `<text class="axis" x="${x(i)}" y="${H - 9}" text-anchor="middle">${m.short}</text>`; });
+        if (n > 1) {
+          const pts = vals.map((v, i) => `${x(i)},${y(v)}`);
+          s += `<path d="M${x(0)},${y(0)} L${pts.join(' L')} L${x(n - 1)},${y(0)} Z" fill="var(--viz-3)" opacity=".10"/>`;
+          s += `<polyline class="line" points="${pts.join(' ')}"/>`;
+        }
+        vals.forEach((v, i) => {
+          s += `<line class="xh" data-b="${i}" x1="${x(i)}" x2="${x(i)}" y1="${T}" y2="${T + ph}"/>`;
+          s += `<circle class="hdot" data-b="${i}" cx="${x(i)}" cy="${y(v)}" r="4"/>`;
+        });
+        const last = vals[n - 1];
+        s += `<circle class="enddot" cx="${x(n - 1)}" cy="${y(last)}" r="4"/>`;
+        s += `<text class="vlabel" x="${x(n - 1)}" y="${f(y(last) - 11)}" text-anchor="${n > 1 ? 'end' : 'middle'}">${fmtCur(last)}</text>`;
+        const tips = vals.map((v, i) => ({
+          title: d.months[i].full,
+          rows: [{ color: 'var(--viz-3)', name: name, value: fmtCur(v) }, { name: 'Change this month', value: fmtCur(round2(v - (i ? vals[i - 1] : 0))) }]
+        }));
+        vals.forEach((v, i) => {
+          s += `<rect class="hit" data-i="${i}" tabindex="0" x="${f(L + i * band)}" y="${T}" width="${f(band)}" height="${ph}" aria-label="${esc(d.months[i].full)}: ${esc(name)} ${fmtCur(v)}"/>`;
+        });
+        return { svg: s + '</svg>', tips };
+      }
+    };
+  }
+
+  function foldTop(items, n) {
+    if (items.length <= n) return items;
+    const rest = items.slice(n - 1);
+    return items.slice(0, n - 1).concat([{ name: `Other (${rest.length} accounts)`, value: round2(rest.reduce((s, i) => s + i.value, 0)) }]);
+  }
+
+  function rankedDef(id, title, sub, all, color, noun) {
+    const items = foldTop(all, 8), total = round2(all.reduce((s, i) => s + i.value, 0));
+    return {
+      id, wide: false, title, sub, legend: null,
+      table: { head: ['Account', 'Amount', 'Share'], rows: all.map(i => [i.name, fmtCur(i.value), pct(i.value, total)]).concat(all.length ? [['Total', fmtCur(total), '100%']] : []) },
+      build(w) {
+        if (!items.length) return { svg: `<p class="viz-note">No ${noun} recorded in this period yet.</p>`, tips: [] };
+        if (items.length === 1) return { svg: `<p class="viz-note">All ${noun} comes from one account: <strong>${esc(items[0].name)}</strong> (${fmtCur(items[0].value)}). A comparison needs at least two accounts.</p>`, tips: [] };
+        const rowH = 34, T = 4, H = items.length * rowH + T * 2;
+        const labelW = Math.min(180, Math.max(90, Math.max(...items.map(i => Math.min(i.name.length, 26))) * 6.6));
+        const x0 = labelW + 10, maxW = Math.max(40, w - x0 - 100), mx = Math.max(...items.map(i => i.value));
+        let s = svgOpen(w, H, title);
+        items.forEach((it, i) => {
+          const cy = T + i * rowH + rowH / 2, bw = Math.max(2, it.value / mx * maxW);
+          const nm = it.name.length > 26 ? it.name.slice(0, 25) + '…' : it.name;
+          s += `<text class="catlabel" x="${f(labelW)}" y="${f(cy + 4)}" text-anchor="end">${esc(nm)}</text>`;
+          s += `<path class="bar" data-b="${i}" style="fill:${color}" d="${barRight(f(x0), f(cy - 9), f(bw), 18, 4)}"/>`;
+          s += `<text class="vlabel" x="${f(x0 + bw + 8)}" y="${f(cy + 4)}">${fmtCur(it.value)}</text>`;
+          s += `<rect class="hit" data-i="${i}" tabindex="0" x="0" y="${T + i * rowH}" width="${w}" height="${rowH}" aria-label="${esc(it.name)}: ${fmtCur(it.value)}"/>`;
+        });
+        const tips = items.map(it => ({ title: it.name, rows: [{ color, name: 'Amount', value: fmtCur(it.value) }, { name: 'Share of total', value: pct(it.value, total) }] }));
+        return { svg: s + '</svg>', tips };
+      }
+    };
+  }
+
+  function chartDefs(d) {
+    const defs = [monthlyDef(d)];
+    if (d.cash) defs.push(lineDef(d, 'cash', 'Cash balance by month', 'Running balance of your cash account at the end of each month', 'Cash balance', d.cashCum));
+    defs.push(lineDef(d, 'cum', 'Cumulative net income', 'Profit (or loss) built up month by month', 'Cumulative net income', d.cumNet));
+    defs.push(rankedDef('revenue', 'Revenue by account', 'Where the money comes from', d.revItems, 'var(--viz-1)', 'revenue'));
+    defs.push(rankedDef('expenses', 'Expenses by account', 'Where the money goes', d.expItems, 'var(--viz-2)', 'expenses'));
+    return defs;
+  }
+
+  /* ---------- Page pieces ---------- */
+  function spark(vals, upTo, color) {
+    const v = vals.slice(0, upTo + 1), n = v.length;
+    if (n < 2) return '';
+    const w = 84, h = 26, pd = 3, mn = Math.min(...v), mx = Math.max(...v), span = mx - mn || 1;
+    const pts = v.map((val, i) => [f(pd + i * (w - 2 * pd) / (n - 1)), f(h - pd - (val - mn) / span * (h - 2 * pd))]);
+    const l = pts[n - 1];
+    return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts.map(p => p.join(',')).join(' ')}" fill="none" stroke="var(--viz-muted)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${l[0]}" cy="${l[1]}" r="4" fill="${color}" stroke="var(--card)" stroke-width="2"/></svg>`;
+  }
+  const tile = (label, value, sub, extra = '') => `<div class="tile"><div class="tile-label">${label}</div><div class="tile-value">${value}</div>${sub ? `<div class="tile-sub">${sub}</div>` : ''}${extra}</div>`;
+  const status = (ok, good, bad) => `<span class="status ${ok ? 'ok' : 'bad'}">${ok ? '✓ ' + good : '✕ ' + bad}</span>`;
+
+  function overviewHTML(d) {
+    const { tot, net } = d, profit = net >= 0;
+    const basis = d.adjusted ? 'after adjustments' : 'before adjustments';
+    let h = `<section class="card hero">
+      <div>
+        <div class="tile-label">Net income · ${basis}</div>
+        <div class="hero-value">${fmtCur(net)}</div>
+        <div class="hero-sub"><span class="status ${profit ? 'ok' : 'bad'}">${profit ? '▲ Profit' : '▼ Loss'}</span>
+          Net margin ${pct(net, tot.Revenue)} · Revenue ${fmtCur(tot.Revenue)} − Expenses ${fmtCur(tot.Expense)}</div>
+      </div>
+      <div class="hero-eq">
+        <div class="tile-label">Accounting equation</div>
+        <div class="eq"><span>Assets <b>${fmtCur(tot.Asset)}</b></span><span class="op">=</span><span>Liabilities <b>${fmtCur(tot.Liability)}</b></span><span class="op">+</span><span>Equity <b>${fmtCur(d.equityTotal)}</b></span></div>
+        <div>${status(d.eqDiff === 0, 'Balanced', 'Off by ' + fmtCur(Math.abs(d.eqDiff)))}</div>
+      </div></section>`;
+    h += '<div class="tiles">';
+    h += tile('Total revenue', fmtCur(tot.Revenue), 'Earned this period', spark(d.rev, d.lastIdx, 'var(--viz-1)'));
+    h += tile('Total expenses', fmtCur(tot.Expense), 'Spent this period', spark(d.exp, d.lastIdx, 'var(--viz-2)'));
+    if (d.cash) h += tile('Cash on hand', fmtCur(d.cash.value), esc(d.cash.a.name), spark(d.cashCum, d.lastIdx, 'var(--viz-3)'));
+    h += tile('Total assets', fmtCur(tot.Asset), 'What the business owns');
+    h += tile('Total liabilities', fmtCur(tot.Liability), 'What the business owes');
+    h += tile('Equity', fmtCur(d.equityTotal), `Owner's equity ${fmtCur(tot.Equity)} + net income ${fmtCur(net)}`);
+    h += tile('Trial balance', status(d.tb.balanced, 'Balanced', 'Out of balance'), `Debits ${fmtCur(d.tb.jd)} · Credits ${fmtCur(d.tb.jc)} (adjusted)`);
+    h += tile('Entries', `${d.entries.length}`, `${d.txCount} transaction${d.txCount === 1 ? '' : 's'} · ${d.adjCount} adjustment${d.adjCount === 1 ? '' : 's'}`);
+    h += tile('Accounts in use', `${d.list.length} <span class="of">of ${state.accounts.length}</span>`, d.latest ? `Latest entry ${fmtDate(d.latest)}` : '');
+    return h + '</div>';
+  }
+
+  const cardHTML = def => `<section class="card viz-card${def.wide ? ' wide' : ''}">
+    <div class="viz-head"><div><h3>${esc(def.title)}</h3><p class="muted">${esc(def.sub)}</p></div>
+      <button type="button" class="btn ghost tiny" data-viewtoggle="${def.id}">${DASH.view[def.id] === 'table' ? 'Show chart' : 'Show table'}</button></div>
+    ${def.legend ? `<div class="viz-legend">${def.legend.map(l => `<span class="lg"><i class="sw ${l.cls}"></i>${esc(l.name)}</span>`).join('')}</div>` : ''}
+    <div class="viz-body" id="viz-${def.id}"></div></section>`;
+
+  const tableHTML = (head, rows) => `<div class="table-wrap"><table class="mini"><thead><tr>${head.map((x, i) => `<th class="${i ? 'num' : ''}">${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map((c, i) => `<td class="${i ? 'num' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+
+  function tablesHTML(d) {
+    // 1. Financial summary by account type
+    let s = `<table><thead><tr><th>Code</th><th>Account</th><th class="num">Debits</th><th class="num">Credits</th><th class="num">Balance</th></tr></thead><tbody>`;
+    ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'].forEach(t => {
+      const rs = d.list.filter(r => r.a.type === t);
+      if (!rs.length) return;
+      s += `<tr class="grp"><td colspan="5"><span class="pill ${t}">${PLURAL[t]}</span></td></tr>`;
+      rs.forEach(r => {
+        s += `<tr><td>${esc(r.a.code)}</td><td>${esc(r.a.name)}${r.a.normal !== NORMAL[t] ? ' <span class="muted">(contra)</span>' : ''}</td><td class="num">${cell(r.dr)}</td><td class="num">${cell(r.cr)}</td><td class="num">${money(r.value)}</td></tr>`;
+      });
+      s += `<tr class="sub"><td colspan="4">Total ${PLURAL[t].toLowerCase()}</td><td class="num">${money(d.tot[t])}</td></tr>`;
+    });
+    [['Net income (revenue − expenses)', d.net], ['Total equity including net income', d.equityTotal],
+      ['Total liabilities + equity', round2(d.tot.Liability + d.equityTotal)], ['Total assets', d.tot.Asset]]
+      .forEach(([k, v]) => { s += `<tr class="sum"><td colspan="4">${k}</td><td class="num">${money(v)}</td></tr>`; });
+    s += '</tbody></table>';
+    const idle = state.accounts.length - d.list.length;
+    const summary = `<section class="card"><div class="viz-head"><div><h3>Financial summary</h3><p class="muted">Every account with activity, grouped by type. Balances are shown on each account's normal side${d.adjusted ? ', after adjustments' : ', before adjustments'}.</p></div></div>
+      <div class="table-wrap">${s}</div>${idle ? `<p class="muted small">${idle} other account${idle > 1 ? 's have' : ' has'} no activity in this period.</p>` : ''}</section>`;
+
+    // 2. What the adjustments changed
+    const adj = d.list.filter(r => r.ad || r.ac);
+    const adjBody = adj.length
+      ? tableHTML(['Account', 'Before adjustments', 'Adjustment', 'After adjustments'],
+        adj.map(r => [`${r.a.code} – ${r.a.name}`, money(r.before), (r.adjEffect > 0 ? '+' : '') + money(r.adjEffect), money(round2(r.before + r.adjEffect))]))
+      : '<p class="muted">No adjustments recorded in this period.</p>';
+    const adjCard = `<section class="card"><div class="viz-head"><div><h3>What the adjustments changed</h3><p class="muted">Balance of each adjusted account before and after the adjusting entries.</p></div></div>${adjBody}</section>`;
+
+    // 3. Latest entries
+    const recent = d.entries.map((e, i) => ({ e, i })).sort((a, b) => b.e.date.localeCompare(a.e.date) || b.i - a.i).slice(0, 10);
+    let r = `<table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th class="num">Amount</th><th>Comment</th></tr></thead><tbody>`;
+    recent.forEach(({ e }) => {
+      r += `<tr><td>${fmtDate(e.date)}</td><td><span class="kind ${e.kind}">${e.kind === 'adjustment' ? 'Adjustment' : 'Transaction'}</span></td><td>${esc(e.desc)}</td><td class="num">${money(e.lines.reduce((s2, l) => s2 + l.debit, 0))}</td><td class="muted">${esc(e.comment || '')}</td></tr>`;
+    });
+    r += '</tbody></table>';
+    const recentCard = `<section class="card"><div class="viz-head"><div><h3>Latest entries</h3><p class="muted">Showing ${recent.length} of ${d.entries.length} in this period, newest first.</p></div></div><div class="table-wrap">${r}</div></section>`;
+    return summary + adjCard + recentCard;
+  }
+
+  /* ---------- Drawing ---------- */
+  function drawChart(def) {
+    const body = $('#viz-' + def.id);
+    if (!body) return;
+    hideTip();
+    if (DASH.view[def.id] === 'table') { body.innerHTML = tableHTML(def.table.head, def.table.rows); return; }
+    const out = def.build(Math.max(300, Math.floor(body.clientWidth)));
+    body.innerHTML = out.svg;
+    attachHover(body, out.tips);
+  }
+  const drawAll = () => DASH.defs.forEach(drawChart);
+
+  function renderDashboard() {
+    const root = $('#dashRoot');
+    if (!root) return;
+    hideTip();
+    $('#dashPeriod').textContent = '📅 ' + period().label;
+    const d = dashData();
+    if (!d.entries.length) {
+      const other = state.entries.length;
+      DASH.defs = [];
+      root.innerHTML = `<div class="card empty-dash"><h3>Nothing to chart yet</h3><p class="muted">${other
+        ? `You have ${other} entr${other > 1 ? 'ies' : 'y'}, but none fall inside the selected accounting period. Change the period at the top of the page.`
+        : 'Record a few transactions, or press <strong>Load sample data</strong> at the top of the page to see a full example.'}</p></div>`;
+      return;
+    }
+    DASH.defs = chartDefs(d);
+    root.innerHTML = overviewHTML(d) + `<div class="chart-grid">${DASH.defs.map(cardHTML).join('')}</div>` + tablesHTML(d);
+    drawAll();
+  }
+
+  function setupDashboard() {
+    $('#dashBasis').addEventListener('change', e => { DASH.basis = e.target.value; renderDashboard(); });
+    document.addEventListener('click', e => {
+      const b = e.target.closest('[data-viewtoggle]');
+      if (!b) return;
+      const id = b.dataset.viewtoggle, def = DASH.defs.find(x => x.id === id);
+      if (!def) return;
+      DASH.view[id] = DASH.view[id] === 'table' ? 'chart' : 'table';
+      b.textContent = DASH.view[id] === 'table' ? 'Show chart' : 'Show table';
+      drawChart(def);
+    });
+    let timer;
+    window.addEventListener('resize', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if ($('#tab-dashboard').classList.contains('active')) drawAll(); }, 150);
+    });
+  }
+
   /* ---------- Render everything ---------- */
   function refreshAccountSelects() {
     $$('select[name=acct]').forEach(sel => {
@@ -683,6 +1118,7 @@
     renderEntryList('transaction');
     renderEntryList('adjustment');
     renderTrial();
+    if ($('#tab-dashboard').classList.contains('active')) renderDashboard();
     $$('.entry-form').forEach(updateTotals);
   }
 
@@ -694,6 +1130,7 @@
     setupEntryForms();
     setupEntryLists();
     setupHeader();
+    setupDashboard();
     $('#accountForm').normal.value = NORMAL[$('#accountForm').type.value];
 
     if (useDB) {

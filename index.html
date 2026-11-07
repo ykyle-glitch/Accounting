@@ -17,6 +17,7 @@
       </div>
     </div>
     <div class="header-actions">
+      <span id="dbStatus" class="db-status" role="status"></span>
       <button class="btn light" id="btnSample" type="button" title="Fill the system with example data so you can see how it works">Load sample data</button>
       <button class="btn light danger-text" id="btnReset" type="button" title="Delete everything and start fresh">Reset all</button>
     </div>
@@ -60,10 +61,11 @@
 
     <!-- Tabs -->
     <nav class="tabs" role="tablist">
-      <button class="tab active" role="tab" data-tab="accounts"> Chart of Accounts</button>
-      <button class="tab" role="tab" data-tab="transactions"> Business Transactions</button>
-      <button class="tab" role="tab" data-tab="trial"> Trial Balance</button>
-      <button class="tab" role="tab" data-tab="adjustments"> Adjustments</button>
+      <button class="tab active" role="tab" data-tab="accounts">1. Chart of Accounts</button>
+      <button class="tab" role="tab" data-tab="transactions">2. Business Transactions</button>
+      <button class="tab" role="tab" data-tab="trial">3. Trial Balance</button>
+      <button class="tab" role="tab" data-tab="adjustments">4. Adjustments</button>
+      <button class="tab" role="tab" data-tab="dashboard">5. Dashboard</button>
     </nav>
 
     <!-- 1. CHART OF ACCOUNTS -->
@@ -180,12 +182,33 @@
       </div>
     </section>
 
+    <!-- 5. DASHBOARD -->
+    <section class="panel dash" id="tab-dashboard">
+      <div class="card dash-filters">
+        <div>
+          <h2>Dashboard</h2>
+          <p class="muted">A picture of your books for the selected accounting period. Every number comes from the same transactions and adjustments as the Trial Balance, so they always agree. Hover (or tab to) any bar or point to see its exact values.</p>
+        </div>
+        <div class="dash-controls">
+          <label class="inline">Show balances
+            <select id="dashBasis">
+              <option value="adjusted">After adjustments</option>
+              <option value="unadjusted">Before adjustments</option>
+            </select>
+          </label>
+          <div class="period-chip" id="dashPeriod"></div>
+        </div>
+      </div>
+      <div id="dashRoot"></div>
+    </section>
+
   </main>
 
-  <footer class="footer">Data is stored only in this browser (localStorage). Clearing browser data will remove it.</footer>
+  <footer class="footer">Data is saved to your Supabase database. (If Supabase is not set up yet, it is kept only in this browser.)</footer>
   <div id="toast" role="status" aria-live="polite"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
   <script src="app.js"></script>
-  <script src="Config.js"></script>
 </body>
 </html>
