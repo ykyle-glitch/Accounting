@@ -1,14 +1,23 @@
 /* =========================================================
    Accounting Management System
    Modules: Chart of Accounts · Transactions · Trial Balance · Adjustments
-   Data is saved in the browser (localStorage).
+   Data is saved in Supabase (Postgres). If config.js has no keys yet,
+   it falls back to this browser's localStorage so the app still works.
    ========================================================= */
 (() => {
   'use strict';
 
   /* ---------- Constants & helpers ---------- */
-  const STORE_KEY = 'ams-v1';
+  const STORE_KEY = 'ams-v1';              // local mode: everything
+  const SETTINGS_KEY = 'ams-settings-v1';  // database mode: only the period settings
   const GUIDE_KEY = 'ams-guide-hidden';
+
+  // Supabase connection (keys live in config.js)
+  const CFG_OK = !!(window.SUPABASE_URL && window.SUPABASE_ANON_KEY &&
+    !/YOUR-/i.test(window.SUPABASE_URL + window.SUPABASE_ANON_KEY));
+  const sb = (CFG_OK && window.supabase && window.supabase.createClient)
+    ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY) : null;
+  const useDB = !!sb;
   const NORMAL = { Asset: 'Debit', Liability: 'Credit', Equity: 'Credit', Revenue: 'Credit', Expense: 'Debit' };
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -24,7 +33,13 @@
     const n = Number(t);
     return Number.isFinite(n) ? n : NaN;
   };
-  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  // Entry ids are UUIDs because the database column is of type uuid
+  const uid = () => (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+      });
   const fmtDate = iso => {
     const [y, m, d] = iso.split('-').map(Number);
     return `${MONTHS[m - 1].slice(0, 3)} ${d}, ${y}`;
@@ -66,18 +81,98 @@
     entries: [] // { id, kind: 'transaction'|'adjustment', date, desc, comment, lines: [{acct, debit, credit}] }
   });
 
-  let state = load();
+  let state = loadState();
 
-  function load() {
+  // Local mode restores everything; database mode restores only the period
+  // settings here (accounts and entries are fetched from Supabase on start).
+  function loadState() {
+    const s = freshState();
     try {
-      const raw = JSON.parse(localStorage.getItem(STORE_KEY));
-      if (raw && raw.settings && Array.isArray(raw.accounts) && Array.isArray(raw.entries)) return raw;
+      const raw = JSON.parse(localStorage.getItem(useDB ? SETTINGS_KEY : STORE_KEY));
+      if (useDB) { if (raw && raw.mode && raw.year) s.settings = raw; }
+      else if (raw && raw.settings && Array.isArray(raw.accounts) && Array.isArray(raw.entries)) return raw;
     } catch (e) { /* ignore */ }
-    return freshState();
+    return s;
   }
   function save() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+    try { localStorage.setItem(useDB ? SETTINGS_KEY : STORE_KEY, JSON.stringify(useDB ? state.settings : state)); }
     catch (e) { toast('Could not save to this browser (storage is full or blocked).', true); }
+  }
+
+  /* ---------- Data layer (Supabase) ----------
+     Every method does nothing in local mode, so the rest of the app
+     does not need to care which mode it is running in. */
+  const unwrap = r => { if (r.error) throw r.error; return r.data; };
+  const entryRow = e => ({ id: e.id, kind: e.kind, entry_date: e.date, description: e.desc, comment: e.comment || '' });
+  const lineRows = e => e.lines.map((l, i) => ({ entry_id: e.id, line_no: i, acct_code: l.acct, debit: l.debit, credit: l.credit }));
+
+  const store = {
+    async load() {
+      const accounts = unwrap(await sb.from('accounts').select('code,name,type,normal').order('code'));
+      const rows = unwrap(await sb.from('entries')
+        .select('id,kind,entry_date,description,comment,entry_lines(line_no,acct_code,debit,credit)')
+        .order('entry_date'));
+      return {
+        accounts,
+        entries: rows.map(r => ({
+          id: r.id, kind: r.kind, date: r.entry_date, desc: r.description, comment: r.comment || '',
+          lines: (r.entry_lines || []).slice().sort((a, b) => a.line_no - b.line_no)
+            .map(l => ({ acct: l.acct_code, debit: Number(l.debit), credit: Number(l.credit) }))
+        }))
+      };
+    },
+    async addAccount(a) {
+      if (useDB) unwrap(await sb.from('accounts').insert(a));
+    },
+    async removeAccount(code) {
+      if (useDB) unwrap(await sb.from('accounts').delete().eq('code', code));
+    },
+    async addEntry(e) {
+      if (!useDB) return;
+      unwrap(await sb.from('entries').insert(entryRow(e)));
+      const res = await sb.from('entry_lines').insert(lineRows(e));
+      if (res.error) {
+        await sb.from('entries').delete().eq('id', e.id); // undo the half-saved entry
+        throw res.error;
+      }
+    },
+    async removeEntry(id) {
+      if (useDB) unwrap(await sb.from('entries').delete().eq('id', id)); // lines are removed by cascade
+    },
+    async replaceAll(accounts, entries) {
+      if (!useDB) return;
+      unwrap(await sb.from('entries').delete().not('id', 'is', null));
+      unwrap(await sb.from('accounts').delete().not('code', 'is', null));
+      unwrap(await sb.from('accounts').insert(accounts));
+      if (entries.length) {
+        unwrap(await sb.from('entries').insert(entries.map(entryRow)));
+        unwrap(await sb.from('entry_lines').insert(entries.flatMap(lineRows)));
+      }
+    }
+  };
+
+  const fail = err => { console.error(err); toast('Database error: ' + ((err && err.message) || err), true); };
+
+  // Runs a database action with the button disabled; returns true on success.
+  async function guarded(btn, fn) {
+    if (btn) btn.disabled = true;
+    try { await fn(); return true; }
+    catch (err) { fail(err); return false; }
+    finally { if (btn) btn.disabled = false; }
+  }
+
+  function setDbStatus(kind, detail) {
+    const el = $('#dbStatus');
+    if (!el) return;
+    const map = {
+      loading: ['Connecting to Supabase…', 'loading'],
+      ok: ['☁ Supabase connected', 'ok'],
+      local: ['💾 Saving in this browser only (Supabase not set up)', 'local'],
+      error: ['⚠ Supabase connection failed', 'error']
+    };
+    el.textContent = map[kind][0];
+    el.className = 'db-status ' + map[kind][1];
+    el.title = detail || '';
   }
 
   /* ---------- Accounting period (calendar or fiscal year) ---------- */
@@ -147,7 +242,7 @@
     form.type.addEventListener('change', () => { form.normal.value = NORMAL[form.type.value]; });
     form.code.addEventListener('input', () => { form.code.value = form.code.value.replace(/\D/g, ''); });
 
-    form.addEventListener('submit', e => {
+    form.addEventListener('submit', async e => {
       e.preventDefault();
       $$('.invalid', form).forEach(x => x.classList.remove('invalid'));
       $$('.err', form).forEach(x => (x.textContent = ''));
@@ -162,7 +257,9 @@
       else if (state.accounts.some(a => a.name.toLowerCase() === name.toLowerCase())) fail(form.name, 'An account with this name already exists.');
       if (!ok) { (form.querySelector('.invalid') || form.code).focus(); return; }
 
-      state.accounts.push({ code, name, type: form.type.value, normal: form.normal.value });
+      const acc = { code, name, type: form.type.value, normal: form.normal.value };
+      if (!(await guarded(form.querySelector('[type=submit]'), () => store.addAccount(acc)))) return;
+      state.accounts.push(acc);
       save(); form.reset(); form.normal.value = NORMAL[form.type.value];
       renderAll(); toast(`Added account ${code} – ${name}`);
       form.code.focus();
@@ -170,7 +267,7 @@
 
     $('#accFilter').addEventListener('change', renderAccounts);
 
-    $('#accBody').addEventListener('click', e => {
+    $('#accBody').addEventListener('click', async e => {
       const btn = e.target.closest('[data-del-acct]');
       if (!btn) return;
       const code = btn.dataset.delAcct;
@@ -180,6 +277,7 @@
         return;
       }
       if (!confirm(`Remove account ${code} – ${acc.name}?`)) return;
+      if (!(await guarded(btn, () => store.removeAccount(code)))) return;
       state.accounts = state.accounts.filter(a => a.code !== code);
       save(); renderAll(); toast('Account removed.');
     });
@@ -362,7 +460,7 @@
     else { s.textContent = `✕ Out of balance by ${money(Math.abs(d - c))}`; s.style.color = 'var(--bad)'; }
   }
 
-  function submitEntry(form) {
+  async function submitEntry(form) {
     const kind = form.dataset.kind;
     const adj = kind === 'adjustment';
     const errors = [];
@@ -417,7 +515,9 @@
     }
     box.hidden = true;
 
-    state.entries.push({ id: uid(), kind, date, desc, comment, lines });
+    const entry = { id: uid(), kind, date, desc, comment, lines };
+    if (!(await guarded(form.querySelector('[type=submit]'), () => store.addEntry(entry)))) return;
+    state.entries.push(entry);
     save();
     resetForm(form, true);
     renderAll();
@@ -454,11 +554,12 @@
   }
 
   function setupEntryLists() {
-    document.addEventListener('click', e => {
+    document.addEventListener('click', async e => {
       const btn = e.target.closest('[data-del-entry]');
       if (!btn) return;
       const entry = state.entries.find(x => x.id === btn.dataset.delEntry);
       if (!entry || !confirm(`Delete "${entry.desc}"? This cannot be undone.`)) return;
+      if (!(await guarded(btn, () => store.removeEntry(entry.id)))) return;
       state.entries = state.entries.filter(x => x.id !== entry.id);
       save(); renderAll(); toast('Entry deleted.');
     });
@@ -525,14 +626,13 @@
   /* =========================================================
      Sample data, reset, guide
      ========================================================= */
-  function loadSample() {
+  async function loadSample() {
     if (state.entries.length && !confirm('This will replace your current accounts and entries with sample data. Continue?')) return;
-    const keep = state.settings;
-    state = freshState();
-    state.settings = keep;
+    const next = freshState();
+    next.settings = state.settings;
     const p = period();
     const T = (n, desc, lines, kind = 'transaction', comment = '') =>
-      state.entries.push({ id: uid(), kind, date: addDays(p.start, n), desc, comment, lines: lines.map(([acct, debit, credit]) => ({ acct, debit, credit })) });
+      next.entries.push({ id: uid(), kind, date: addDays(p.start, n), desc, comment, lines: lines.map(([acct, debit, credit]) => ({ acct, debit, credit })) });
     T(1, 'Owner invested cash to start the business', [['1000', 50000, 0], ['3000', 0, 50000]]);
     T(3, 'Bought equipment for cash', [['1500', 12000, 0], ['1000', 0, 12000]]);
     T(5, 'Bought supplies on account', [['1200', 800, 0], ['2000', 0, 800]]);
@@ -542,14 +642,18 @@
     T(25, 'Paid utilities', [['5200', 650, 0], ['1000', 0, 650]]);
     T(28, 'Supplies used', [['5300', 500, 0], ['1200', 0, 500]], 'adjustment', 'Physical count shows 500 of supplies were used up during the period.');
     T(28, 'Record depreciation on equipment', [['5500', 200, 0], ['1590', 0, 200]], 'adjustment', 'Equipment depreciates evenly over its useful life; this is the amount for the period.');
+    if (!(await guarded($('#btnSample'), () => store.replaceAll(next.accounts, next.entries)))) return;
+    state = next;
     save(); renderAll(); toast('Sample data loaded. Open the Trial Balance tab to see the result.');
   }
 
   function setupHeader() {
     $('#btnSample').addEventListener('click', loadSample);
-    $('#btnReset').addEventListener('click', () => {
+    $('#btnReset').addEventListener('click', async () => {
       if (!confirm('Delete ALL accounts, transactions and adjustments and start over?')) return;
-      state = freshState(); save(); renderAll(); toast('Everything was reset.');
+      const fresh = freshState();
+      if (!(await guarded($('#btnReset'), () => store.replaceAll(fresh.accounts, [])))) return;
+      state = fresh; save(); renderAll(); toast('Everything was reset.');
     });
     $('#btnPrint').addEventListener('click', () => window.print());
     $('#tbAll').addEventListener('change', renderTrial);
@@ -583,7 +687,7 @@
   }
 
   /* ---------- Start ---------- */
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     setupPeriodBar();
     setupTabs();
     setupAccounts();
@@ -591,6 +695,22 @@
     setupEntryLists();
     setupHeader();
     $('#accountForm').normal.value = NORMAL[$('#accountForm').type.value];
+
+    if (useDB) {
+      setDbStatus('loading');
+      try {
+        const data = await store.load();
+        state.accounts = data.accounts;
+        state.entries = data.entries;
+        setDbStatus('ok');
+      } catch (err) {
+        state.accounts = []; state.entries = [];
+        setDbStatus('error', (err && err.message) || String(err));
+        fail(err);
+      }
+    } else {
+      setDbStatus('local');
+    }
     renderAll();
   });
 })();

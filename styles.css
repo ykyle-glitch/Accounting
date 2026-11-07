@@ -255,3 +255,14 @@ tfoot td { font-weight: 800; border-top: 2px solid var(--navy); background: #f6f
   .period-bar { display: block; border: 0; }
   .period-label { background: none; padding: 0; }
 }
+
+/* ---------- Database status pill ---------- */
+.db-status {
+  font-size: .8rem; font-weight: 600; padding: 6px 12px; border-radius: 99px;
+  background: rgba(255, 255, 255, .15); color: #fff; align-self: center;
+}
+.db-status.ok { background: rgba(23, 128, 61, .85); }
+.db-status.local { background: rgba(240, 180, 41, .85); color: #3b2a00; }
+.db-status.error { background: rgba(198, 40, 40, .9); }
+.db-status:empty { display: none; }
+@media print { .db-status { display: none !important; } }
